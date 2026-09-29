@@ -718,45 +718,28 @@ def _task_name_matches(name: str | None) -> bool:
 def is_jellyfin_scanning() -> tuple[bool, str | None]:
     """
     Пытаемся понять, выполняется ли сейчас скан/рефреш медиатеки/метаданных в Jellyfin.
-    1) /emby/ScheduledTasks/Running (если поддерживается)
-    2) /emby/ScheduledTasks (ищем состояния Running/Executing/IsRunning)
+    Jellyfin 12 использует канонический GET /ScheduledTasks; состояние выполнения
+    определяется по State/IsRunning в элементах ответа.
     Возврат: (True/False, краткое описание)
     """
     headers = {'accept': 'application/json'}
-    params = {'api_key': JELLYFIN_API_KEY}
+    params = {'ApiKey': JELLYFIN_API_KEY}
 
-    # 1) текущие выполняемые задачи
     try:
-        url = f"{JELLYFIN_BASE_URL}/emby/ScheduledTasks/Running"
-        r = requests.get(url, headers=headers, params=params, timeout=6)
-        if r.status_code == 200:
-            data = r.json() or []
-            for t in data:
-                name = t.get("Name") or t.get("Key") or ""
-                state = t.get("State") or ""
-                prog = t.get("CurrentProgressPercentage") or t.get("Progress") or t.get("PercentComplete")
-                if _task_name_matches(name):
-                    desc = f"{name} {prog}%" if prog is not None else name
-                    return True, desc
-    except Exception:
-        pass
-
-    # 2) общий список задач
-    try:
-        url = f"{JELLYFIN_BASE_URL}/emby/ScheduledTasks"
+        url = f"{JELLYFIN_BASE_URL}/ScheduledTasks"
         r = requests.get(url, headers=headers, params=params, timeout=8)
-        if r.status_code == 200:
-            data = r.json() or []
-            for t in data:
-                name = t.get("Name") or t.get("Key") or ""
-                state = (t.get("State") or "").lower()
-                is_running = bool(t.get("IsRunning")) or state in ("running", "executing", "inprogress")
-                if is_running and _task_name_matches(name):
-                    prog = t.get("CurrentProgressPercentage") or t.get("Progress") or t.get("PercentComplete")
-                    desc = f"{name} {prog}%" if prog is not None else name
-                    return True, desc
-    except Exception:
-        pass
+        r.raise_for_status()
+        data = r.json() or []
+        for task in data:
+            name = task.get("Name") or task.get("Key") or ""
+            state = (task.get("State") or "").lower()
+            is_running = bool(task.get("IsRunning")) or state in ("running", "executing", "inprogress")
+            if is_running and _task_name_matches(name):
+                prog = task.get("CurrentProgressPercentage") or task.get("Progress") or task.get("PercentComplete")
+                desc = f"{name} {prog}%" if prog is not None else name
+                return True, desc
+    except Exception as ex:
+        logging.debug(f"Jellyfin scheduled tasks check failed: {ex}")
 
     return False, None
 
@@ -832,11 +815,11 @@ def jellyfin_get_tmdb_id(item_id: str) -> str | None:
     """
     try:
         params = {
-            "api_key": JELLYFIN_API_KEY,
+            "ApiKey": JELLYFIN_API_KEY,
             "Ids": item_id,
             "Fields": "ProviderIds"
         }
-        url = f"{JELLYFIN_BASE_URL}/emby/Items"
+        url = f"{JELLYFIN_BASE_URL}/Items"
         r = requests.get(url, params=params, timeout=8)
         r.raise_for_status()
         items = (r.json() or {}).get("Items") or []
@@ -2204,7 +2187,7 @@ def _safe_fetch_jellyfin_image_bytes(item_id: str) -> bytes | None:
     try:
         url = f"{JELLYFIN_BASE_URL}/Items/{item_id}/Images/Primary"
         # если требуется ключ в query, раскомментируй следующую строку:
-        # url = f"{url}?api_key={JELLYFIN_API_KEY}"
+        # url = f"{url}?ApiKey={JELLYFIN_API_KEY}"
         r = requests.get(url, timeout=6)
         r.raise_for_status()
         return r.content
@@ -2425,7 +2408,7 @@ def jellyfin_list_recent_episodes_for_series(series_id: str, *, limit: int = 50)
     """
     try:
         params = {
-            "api_key": JELLYFIN_API_KEY,
+            "ApiKey": JELLYFIN_API_KEY,
             "Fields": "DateCreated,ParentId,SeasonId,ProductionYear",
             "IsMissing": "false",
             "IsUnaired": "false",
@@ -2437,7 +2420,7 @@ def jellyfin_list_recent_episodes_for_series(series_id: str, *, limit: int = 50)
             # На этом эндпоинте тоже допустим, и снижает нагрузку на подсчёте:
             "EnableTotalRecordCount": "false",
         }
-        url = f"{JELLYFIN_BASE_URL}/emby/Shows/{series_id}/Episodes"
+        url = f"{JELLYFIN_BASE_URL}/Shows/{series_id}/Episodes"
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
         data = r.json() or {}
@@ -2489,8 +2472,8 @@ def build_season_announce_message(*, series_name_cleaned: str, season_name: str,
 
 def get_item_details(item_id):
     headers = {'accept': 'application/json', }
-    params = {'api_key': JELLYFIN_API_KEY, }
-    url = f"{JELLYFIN_BASE_URL}/emby/Items?Recursive=true&Fields=DateCreated, Overview&Ids={item_id}"
+    params = {'ApiKey': JELLYFIN_API_KEY, }
+    url = f"{JELLYFIN_BASE_URL}/Items?Recursive=true&Fields=DateCreated, Overview&Ids={item_id}"
     response = requests.get(url, headers=headers, params=params)
     response.raise_for_status()  # Check if request was successful
     return response.json()
@@ -2501,8 +2484,8 @@ def jellyfin_count_tracks_in_album(album_id: str) -> int | None:
     """
     try:
         # 1) Попробуем получить сам альбом с ChildCount
-        params = {'api_key': JELLYFIN_API_KEY, 'Ids': album_id, 'Fields': 'ChildCount'}
-        url = f"{JELLYFIN_BASE_URL}/emby/Items"
+        params = {'ApiKey': JELLYFIN_API_KEY, 'Ids': album_id, 'Fields': 'ChildCount'}
+        url = f"{JELLYFIN_BASE_URL}/Items"
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         items = (r.json() or {}).get('Items') or []
@@ -2513,7 +2496,7 @@ def jellyfin_count_tracks_in_album(album_id: str) -> int | None:
 
         # 2) Фолбэк: считаем дочерние элементы-аудиотреки
         params = {
-            'api_key': JELLYFIN_API_KEY,
+            'ApiKey': JELLYFIN_API_KEY,
             'ParentId': album_id,
             'IncludeItemTypes': 'Audio',
             'Recursive': 'false',
@@ -2535,7 +2518,7 @@ def jellyfin_list_tracks_in_album(album_id: str, *, limit: int | None = None) ->
     """
     try:
         params = {
-            'api_key': JELLYFIN_API_KEY,
+            'ApiKey': JELLYFIN_API_KEY,
             'ParentId': album_id,
             'IncludeItemTypes': 'Audio',
             'Recursive': 'false',
@@ -2547,7 +2530,7 @@ def jellyfin_list_tracks_in_album(album_id: str, *, limit: int | None = None) ->
         }
         if limit and limit > 0:
             params['Limit'] = str(limit)
-        url = f"{JELLYFIN_BASE_URL}/emby/Items"
+        url = f"{JELLYFIN_BASE_URL}/Items"
         r = requests.get(url, params=params, timeout=12)
         r.raise_for_status()
         return (r.json() or {}).get('Items') or []
@@ -2623,8 +2606,8 @@ def _get_item_media_info_movie(item_id: str) -> dict:
     """
     try:
         headers = {'accept': 'application/json'}
-        params = {'api_key': JELLYFIN_API_KEY}
-        url = f"{JELLYFIN_BASE_URL}/emby/Items?Ids={item_id}&Fields=MediaSources,RunTimeTicks"
+        params = {'ApiKey': JELLYFIN_API_KEY}
+        url = f"{JELLYFIN_BASE_URL}/Items?Ids={item_id}&Fields=MediaSources,RunTimeTicks"
         r = requests.get(url, headers=headers, params=params, timeout=12)
         r.raise_for_status()
         data = r.json()
@@ -3130,7 +3113,7 @@ def poll_recent_movies_once():
         try:
             since_iso = _poll_since_get("movie_poll_since")  # NEW
             params = {
-                "api_key": JELLYFIN_API_KEY,
+                "ApiKey": JELLYFIN_API_KEY,
                 "IncludeItemTypes": "Movie",
                 "Recursive": "true",
                 "SortBy": "DateModified,DateCreated",
@@ -3143,7 +3126,7 @@ def poll_recent_movies_once():
                 "MinDateLastSaved": since_iso,
                 "EnableTotalRecordCount": "false",
             }
-            url = f"{JELLYFIN_BASE_URL}/emby/Items"
+            url = f"{JELLYFIN_BASE_URL}/Items"
             r = requests.get(url, params=params, timeout=20)
             r.raise_for_status()
             payload = r.json() or {}
@@ -3501,8 +3484,8 @@ def _get_item_resolution_label(item_id: str) -> str | None:
     Берём первый MediaSource -> первый Video stream.
     """
     try:
-        params = {'api_key': JELLYFIN_API_KEY, 'Ids': item_id, 'Fields': 'MediaSources'}
-        url = f"{JELLYFIN_BASE_URL}/emby/Items"
+        params = {'ApiKey': JELLYFIN_API_KEY, 'Ids': item_id, 'Fields': 'MediaSources'}
+        url = f"{JELLYFIN_BASE_URL}/Items"
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         item = (r.json().get("Items") or [{}])[0]
@@ -3588,7 +3571,7 @@ def _collect_current_movie_keys_and_ids() -> tuple[set[str], set[str]]:
     while True:
         try:
             params = {
-                "api_key": JELLYFIN_API_KEY,
+                "ApiKey": JELLYFIN_API_KEY,
                 "IncludeItemTypes": "Movie",
                 "Recursive": "true",
                 "SortBy": "DateCreated",
@@ -3597,7 +3580,7 @@ def _collect_current_movie_keys_and_ids() -> tuple[set[str], set[str]]:
                 "StartIndex": str(start),
                 "Fields": "ProviderIds,ProductionYear"
             }
-            url = f"{JELLYFIN_BASE_URL}/emby/Items"
+            url = f"{JELLYFIN_BASE_URL}/Items"
             r = requests.get(url, params=params, timeout=20)
             r.raise_for_status()
             payload = r.json() or {}
@@ -3650,7 +3633,7 @@ def _collect_current_movie_keys_and_ids() -> tuple[set[str], set[str]]:
     while True:
         try:
             params = {
-                "api_key": JELLYFIN_API_KEY,
+                "ApiKey": JELLYFIN_API_KEY,
                 "IncludeItemTypes": "Movie",
                 "Recursive": "true",
                 "SortBy": "DateCreated",
@@ -3659,7 +3642,7 @@ def _collect_current_movie_keys_and_ids() -> tuple[set[str], set[str]]:
                 "StartIndex": str(start),
                 "Fields": "ProviderIds,ProductionYear"
             }
-            url = f"{JELLYFIN_BASE_URL}/emby/Items"
+            url = f"{JELLYFIN_BASE_URL}/Items"
             r = requests.get(url, params=params, timeout=20)
             r.raise_for_status()
             payload = r.json() or {}
@@ -3879,7 +3862,7 @@ def safe_fetch_mdblist_ratings(kind: str, tmdb_id: str | None) -> str:
 def jellyfin_count_present_episodes_in_season(season_id: str) -> int | None:
     try:
         params = {
-            "api_key": JELLYFIN_API_KEY,
+            "ApiKey": JELLYFIN_API_KEY,
             "ParentId": season_id,
             "IncludeItemTypes": "Episode",
             "Recursive": "false",
@@ -3887,7 +3870,7 @@ def jellyfin_count_present_episodes_in_season(season_id: str) -> int | None:
             "IsMissing": "false",
             "Limit": "1",
         }
-        url = f"{JELLYFIN_BASE_URL}/emby/Items"
+        url = f"{JELLYFIN_BASE_URL}/Items"
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         data = r.json() or {}
@@ -3907,7 +3890,7 @@ def jellyfin_count_present_episodes_in_season(season_id: str) -> int | None:
 def jellyfin_count_missing_episodes_in_season(season_id: str) -> int | None:
     try:
         params = {
-            "api_key": JELLYFIN_API_KEY,
+            "ApiKey": JELLYFIN_API_KEY,
             "ParentId": season_id,
             "IncludeItemTypes": "Episode",
             "Recursive": "false",
@@ -3917,7 +3900,7 @@ def jellyfin_count_missing_episodes_in_season(season_id: str) -> int | None:
             "LocationTypes": "Virtual",
             "Limit": "1",
         }
-        url = f"{JELLYFIN_BASE_URL}/emby/Items"
+        url = f"{JELLYFIN_BASE_URL}/Items"
         r = requests.get(url, params=params, timeout=10)
         r.raise_for_status()
         data = r.json() or {}
@@ -3971,11 +3954,11 @@ def jellyfin_get_season_counts_resilient(season_id: str) -> tuple[int, int] | tu
 def _iter_changed_series_ids(since_iso: str | None, *, start: int, limit: int) -> list[str]:
     """
     Фаза 1: возвращает список Series-IDs, которые могли измениться после since_iso.
-    Делает лёгкий запрос к /emby/Items (Series) и фильтрует по DateLastMediaAdded/DateModified на клиенте,
+    Делает лёгкий запрос к /Items (Series) и фильтрует по DateLastMediaAdded/DateModified на клиенте,
     если сервер падает на minDateLastSaved.
     """
     base_params = {
-        "api_key": JELLYFIN_API_KEY,
+        "ApiKey": JELLYFIN_API_KEY,
         "IncludeItemTypes": "Series",
         "Recursive": "true",
         "SortBy": "DateModified,DateCreated",
@@ -3987,7 +3970,7 @@ def _iter_changed_series_ids(since_iso: str | None, *, start: int, limit: int) -
     }
 
     def _fetch_once(params: dict) -> list[dict]:
-        url = f"{JELLYFIN_BASE_URL}/emby/Items"
+        url = f"{JELLYFIN_BASE_URL}/Items"
         r = requests.get(url, params=params, timeout=15)
         r.raise_for_status()
         payload = r.json() or {}
@@ -4041,10 +4024,10 @@ def _iter_changed_series_ids(since_iso: str | None, *, start: int, limit: int) -
 def _fetch_recent_episodes_for_series(series_id: str, *, limit: int = 60) -> list[dict]:
     """
     Возвращает свежие эпизоды одного сериала (последние N), отсортированные по дате.
-    Используем /emby/Items с ParentId=series_id (быстрее и стабильнее).
+    Используем /Items с ParentId=series_id (быстрее и стабильнее).
     """
     params = {
-        "api_key": JELLYFIN_API_KEY,
+        "ApiKey": JELLYFIN_API_KEY,
         "ParentId": series_id,
         "IncludeItemTypes": "Episode",
         "Recursive": "true",
@@ -4055,7 +4038,7 @@ def _fetch_recent_episodes_for_series(series_id: str, *, limit: int = 60) -> lis
         "Fields": "ParentId,SeriesId,SeasonName,DateCreated,ProductionYear,Overview",
         "EnableTotalRecordCount": "false",
     }
-    url = f"{JELLYFIN_BASE_URL}/emby/Items"
+    url = f"{JELLYFIN_BASE_URL}/Items"
     r = requests.get(url, params=params, timeout=15)
     r.raise_for_status()
     return (r.json() or {}).get("Items") or []
@@ -4721,7 +4704,7 @@ def _season_fetch_episodes(season_id: str, *, max_items: int | None = None) -> l
                 break
 
             params = {
-                "api_key": JELLYFIN_API_KEY,
+                "ApiKey": JELLYFIN_API_KEY,
                 "ParentId": season_id,
                 "IncludeItemTypes": "Episode",
                 "Recursive": "false",
@@ -4736,7 +4719,7 @@ def _season_fetch_episodes(season_id: str, *, max_items: int | None = None) -> l
                 # поля, нужные для аудио-аналитики
                 "Fields": "MediaSources,LocationType,Path,IndexNumber,Name"
             }
-            url = f"{JELLYFIN_BASE_URL}/emby/Items"
+            url = f"{JELLYFIN_BASE_URL}/Items"
             r = requests.get(url, params=params, timeout=12)
             r.raise_for_status()
             data = r.json() or {}
@@ -5116,7 +5099,7 @@ def poll_episode_quality_once():
         try:
             since_iso = _poll_since_get("epq_poll_since")  # NEW
             params = {
-                "api_key": JELLYFIN_API_KEY,
+                "ApiKey": JELLYFIN_API_KEY,
                 "IncludeItemTypes": "Episode",
                 "Recursive": "true",
                 "SortBy": "DateModified,DateCreated",
@@ -5126,7 +5109,7 @@ def poll_episode_quality_once():
                 "Fields": "ParentId,DateCreated",
                 "EnableTotalRecordCount": "false",
             }
-            url = f"{JELLYFIN_BASE_URL}/emby/Items"
+            url = f"{JELLYFIN_BASE_URL}/Items"
             r = requests.get(url, params=params, timeout=20)
             r.raise_for_status()
             payload = r.json() or {}
@@ -5250,7 +5233,7 @@ def poll_recent_albums_once():
 
         try:
             params = {
-                'api_key': JELLYFIN_API_KEY,
+                'ApiKey': JELLYFIN_API_KEY,
                 'IncludeItemTypes': 'MusicAlbum',
                 'Recursive': 'true',
                 'SortBy': 'DateModified,DateCreated',
@@ -5259,7 +5242,7 @@ def poll_recent_albums_once():
                 'StartIndex': str(start),
                 'Fields': 'ProviderIds,ProductionYear,Overview,DateCreated,RunTimeTicks,Artists,AlbumArtist',
             }
-            url = f"{JELLYFIN_BASE_URL}/emby/Items"
+            url = f"{JELLYFIN_BASE_URL}/Items"
             r = requests.get(url, params=params, timeout=20)
             r.raise_for_status()
             items = (r.json() or {}).get('Items') or []
@@ -5514,7 +5497,7 @@ def poll_recent_books_once():
 
         try:
             params = {
-                "api_key": JELLYFIN_API_KEY,
+                "ApiKey": JELLYFIN_API_KEY,
                 "IncludeItemTypes": "Book,AudioBook",
                 "Recursive": "true",
                 "SortBy": "DateModified,DateCreated",
@@ -5524,7 +5507,7 @@ def poll_recent_books_once():
                 # важно: People/ProviderIds/DateCreated/Overview
                 "Fields": "People,ProviderIds,ProductionYear,Overview,DateCreated",
             }
-            url = f"{JELLYFIN_BASE_URL}/emby/Items"
+            url = f"{JELLYFIN_BASE_URL}/Items"
             r = requests.get(url, params=params, timeout=20)
             r.raise_for_status()
             items = (r.json() or {}).get("Items") or []
@@ -5817,7 +5800,7 @@ def poll_recent_musicvideos_once():
 
         try:
             params = {
-                "api_key": JELLYFIN_API_KEY,
+                "ApiKey": JELLYFIN_API_KEY,
                 "IncludeItemTypes": "MusicVideo",
                 "Recursive": "true",
                 "SortBy": "DateModified,DateCreated",
@@ -5827,7 +5810,7 @@ def poll_recent_musicvideos_once():
                 # Полезные поля для сообщения/логики:
                 "Fields": "Artists,Album,ProviderIds,ProductionYear,Overview,DateCreated,RunTimeTicks"
             }
-            url = f"{JELLYFIN_BASE_URL}/emby/Items"
+            url = f"{JELLYFIN_BASE_URL}/Items"
             r = requests.get(url, params=params, timeout=20)
             r.raise_for_status()
             items = (r.json() or {}).get("Items") or []
@@ -5995,7 +5978,7 @@ def _jf_list_active_sessions(active_within_sec: int) -> list:
     """Возвращает список активных сессий Jellyfin за N секунд."""
     try:
         params = {
-            "api_key": JELLYFIN_API_KEY,
+            "ApiKey": JELLYFIN_API_KEY,
             "ActiveWithinSeconds": str(active_within_sec)
         }
         r = requests.get(f"{JELLYFIN_BASE_URL}/Sessions", params=params, timeout=10)
@@ -6008,7 +5991,7 @@ def _jf_list_active_sessions(active_within_sec: int) -> list:
 def _jf_send_session_message(session_id: str, header: str, text: str, timeout_ms: int) -> bool:
     try:
         url = f"{JELLYFIN_BASE_URL}/Sessions/{session_id}/Message"
-        headers = {"X-MediaBrowser-Token": JELLYFIN_API_KEY}
+        headers = {"Authorization": f'MediaBrowser Token="{JELLYFIN_API_KEY}"'}
         payload = {"Header": header or "", "Text": text or ""}
 
         # Добавляем TimeoutMs только если явно хотим «toast»
