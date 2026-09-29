@@ -2,7 +2,7 @@ version: '3'
 services:
   jellyfin-telegram-notifier:
     container_name: jellyfin-telegram-notifier
-    image: druidblack/jellyfin-telegram-notifie:latest
+    image: ghcr.io/druidblack/jellyfin-telegram-notifier:latest
     ports:
       - "5000:5000"  # Map host port 5000 to container port 5000
     environment:
