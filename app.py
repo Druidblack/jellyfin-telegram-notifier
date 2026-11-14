@@ -34,6 +34,15 @@ TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
 TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 JELLYFIN_BASE_URL = os.environ["JELLYFIN_BASE_URL"].rstrip("/")
 JELLYFIN_API_KEY = os.environ["JELLYFIN_API_KEY"]
+# API keys are not attached to a Jellyfin user. Jellyfin 12 may require
+# an explicit userId for GET /Items/{itemId}; user tokens can omit it.
+JELLYFIN_USER_ID = os.environ.get("JELLYFIN_USER_ID", "").strip()
+if not JELLYFIN_USER_ID:
+    logging.warning(
+        "JELLYFIN_USER_ID is not configured. With a Jellyfin API key, "
+        "GET /Items/{itemId} may return HTTP 400 (series/seasons/episodes). "
+        "Set JELLYFIN_USER_ID to an existing Jellyfin user's ID."
+    )
 YOUTUBE_API_KEY = os.environ["YOUTUBE_API_KEY"]
 MDBLIST_API_KEY = os.environ["MDBLIST_API_KEY"]
 TMDB_API_KEY = os.environ["TMDB_API_KEY"]
@@ -158,16 +167,23 @@ def send_telegram_photo(photo_id, caption):
 
 
 def get_item_details(item_id):
-    # Jellyfin 12 removed the /emby compatibility prefix and deprecated ?api_key=.
-    # Use the current direct item endpoint. Wrap the result in the old
-    # {"Items": [...]} shape so the notifier logic below stays unchanged.
+    # GET /Items/{itemId} is user-scoped with an API key in Jellyfin 12.
+    # The modern endpoint takes userId in the query string, NOT in the path.
+    # Keep userId optional for user-token installations that do not need it.
+    # Preserve the old {"Items": [...]} wrapper for existing callers.
     url = f"{JELLYFIN_BASE_URL}/Items/{item_id}"
     response = requests.get(
         url,
         headers=jellyfin_headers(),
+        params={"userId": JELLYFIN_USER_ID} if JELLYFIN_USER_ID else None,
         timeout=15,
     )
-    response.raise_for_status()  # Check if request was successful
+    if response.status_code == 400 and not JELLYFIN_USER_ID:
+        logging.error(
+            "Jellyfin rejected GET /Items/%s with HTTP 400. "
+            "If using an API key, configure JELLYFIN_USER_ID.", item_id
+        )
+    response.raise_for_status()
     return {"Items": [response.json()]}
 
 
@@ -412,13 +428,14 @@ def announce_new_releases_from_jellyfin():
 
     # Handle specific HTTP errors
     except HTTPError as http_err:
-        logging.error(f"HTTP error occurred: {http_err}")
-        return str(http_err)
+        logging.error("HTTP error occurred: %s", http_err)
+        # A failed delivery must not be acknowledged as a successful webhook.
+        return "Upstream API request failed", 502
 
     # Handle generic exceptions
     except Exception as e:
-        logging.error(f"Error: {str(e)}")
-        return f"Error: {str(e)}"
+        logging.exception("Notification handler failed: %s", e)
+        return "Notification handler failed", 500
 
 
 if __name__ == "__main__":
